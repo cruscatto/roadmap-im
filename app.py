@@ -12,120 +12,7 @@ from azure.devops.v7_1.work_item_tracking.models import TeamContext, Wiql
 load_dotenv()
 
 # ===============================
-# CARREGAR E PREPARAR DADOS (DO AZURE DEVOPS)
-# ===============================
-try:
-    ado_pat = os.getenv('ADO_PERSONAL_ACCESS_TOKEN')
-    ado_org_url = os.getenv('ADO_ORGANIZATION_URL')
-    ado_project_name = os.getenv('ADO_PROJECT_NAME')
-
-    if not all([ado_pat, ado_org_url, ado_project_name]):
-        raise ValueError("Uma ou mais variáveis de ambiente não foram encontradas.")
-
-    credentials = BasicAuthentication('', ado_pat)
-    connection = Connection(base_url=ado_org_url, creds=credentials)
-    wit_client = connection.clients.get_work_item_tracking_client()
-    print("Conectado ao Azure DevOps com sucesso!")
-
-    team_context = TeamContext(project=ado_project_name)
-    
-    query_text = """
-    SELECT
-        [System.Id],
-        [System.WorkItemType],
-        [System.Title],
-        [System.AssignedTo],
-        [System.State],
-        [System.AreaPath],
-        [System.CreatedDate],
-        [Microsoft.VSTS.Scheduling.StartDate],
-        [Microsoft.VSTS.Scheduling.TargetDate],
-        [System.Parent],
-        [Microsoft.VSTS.Scheduling.Effort],
-        [Microsoft.VSTS.Common.BusinessValue],
-        [System.Tags],
-        [Custom.data_incl],
-        [Microsoft.VSTS.Common.ClosedDate]
-    FROM workitems
-    WHERE
-        [System.TeamProject] = @project
-        AND (
-            [System.ChangedDate] > @today - 365
-            AND (
-                [System.WorkItemType] = 'Feature'
-                OR [System.WorkItemType] = 'Projeto'
-                OR [System.WorkItemType] = 'Epic'
-                OR [System.WorkItemType] = 'User Story'
-            )
-            AND [System.State] <> ''
-        )
-    """
-    
-    wiql_object = Wiql(query=query_text)
-    print("Executando query...")
-    wiql_results = wit_client.query_by_wiql(wiql=wiql_object, team_context=team_context)
-    print(f"Query retornou {len(wiql_results.work_items)} IDs.")
-
-    if wiql_results.work_items:
-        work_item_ids = [item.id for item in wiql_results.work_items]
-        
-        work_items_details = []
-        chunk_size = 100
-        
-        for i in range(0, len(work_item_ids), chunk_size):
-            chunk = work_item_ids[i:i + chunk_size]
-            print(f"Buscando detalhes para o lote de IDs {i+1} a {i+len(chunk)}...")
-            batch_details = wit_client.get_work_items(ids=chunk, expand="All")
-            work_items_details.extend(batch_details)
-        
-        print(f"Detalhes de {len(work_items_details)} work items carregados com sucesso.")
-
-        data_for_df = []
-        for item in work_items_details:
-            fields = item.fields
-            data_for_df.append({
-                'ID': item.id,
-                'Work Item Type': fields.get('System.WorkItemType'),
-                'Title': fields.get('System.Title'),
-                'State': fields.get('System.State'),
-                'Assigned To': fields.get('System.AssignedTo', {}).get('displayName', 'Não atribuído'),
-                'Parent': fields.get('System.Parent'),
-                'Start Date': fields.get('Microsoft.VSTS.Scheduling.StartDate'),
-                'Target Date': fields.get('Microsoft.VSTS.Scheduling.TargetDate'),
-                'Effort': fields.get('Microsoft.VSTS.Scheduling.Effort'),
-                'Business Value': fields.get('Microsoft.VSTS.Common.BusinessValue'),
-                'data_incl': fields.get('Custom.data_incl'),
-            })
-        
-        df = pd.DataFrame(data_for_df)
-        print("DataFrame criado com sucesso!")
-
-    else:
-        print("A query não retornou nenhum work item.")
-        df = pd.DataFrame()
-
-    numeric_cols = ['ID', 'Parent', 'Effort', 'Business Value']
-    for col in numeric_cols:
-        if col in df.columns: df[col] = pd.to_numeric(df[col], errors='coerce')
-        else: df[col] = pd.NA
-    date_cols = ['Start Date', 'Target Date', 'data_incl']
-    for col in date_cols:
-        if col in df.columns: df[col] = pd.to_datetime(df[col], errors='coerce').dt.tz_localize(None)
-        else: df[col] = pd.NaT
-    df['Assigned To'] = df['Assigned To'].fillna('Não atribuído')
-    df['State'] = df['State'].fillna('Não definido')
-    if 'Assigned To' in df.columns and df['Assigned To'].dtype == 'object':
-            df['Assigned To'] = df['Assigned To'].str.split('<').str[0].str.strip()
-    dados_carregados = True
-
-except Exception as e:
-    print(f"!!!!!! ERRO AO CARREGAR DADOS DO AZURE DEVOPS !!!!!!")
-    print(f"Erro original: {e}")
-    df = pd.DataFrame()
-    dados_carregados = False
-
-# ===============================
-# MAPEAMENTO DE ÁREAS E PESSOAS
+# MAPEAMENTO DE ÁREAS E PESSOAS (Sem alterações)
 # ===============================
 AREAS = {
     'im': {'nome': 'Inteligência de Mercado', 'responsavel': 'Juliana Trevisan Rezende', 'image_file': 'Mercado.png'},
@@ -139,55 +26,100 @@ AREAS = {
 }
 
 PEOPLE_WITH_PHOTOS = [
-    'Juliana Trevisan Rezende',#
-    'Beatriz Ridolfi Teixeira',#
-    'Sergio Ferreira da Silva', #
-    'Adriano Santos Rodrigues', #
-    'Wilgner Felix Pereira de Lima',#
-    'Fabiana Gomes Macedo Rossetti', #
-    'Henrique Aguiar Fraga', #
-    'Julio Cesar Arantes Pollaria',# 
-    'Isabela Santos do Nascimento', #
-    'Lucas Oliveira da Silva',#
-    'Grasiele Cristiane de Araujo Goncalves',# 
-    'Kevin Axel Beltrame', #
-    'Mariana Araujo de Oliveira Dias',# 
-    'Yasmim Alves de Lima e Silva',#
-    'Ana Luiza Sbruzzi Portela Figueiredo',# 
-    'Arthur Davi Kikumiti Barros', #
-    'Pedro Hack Schroder Silva', #
-    'Giovanna Mendonca Valentim', #
-    'Alini Ferreira Calvi',#
-    'Ana Carolina de Morais Gamarra', #
-    'Ana Carolina Leao Dos Santos', #
-    'Carlos Eduardo Real Lopes', #
-    'Emylle Katllen Cordeiro do Nascimento', #
-    'Isadora Rossi', #
-    'Izabelle Paulina Rocha Soares Moura', #
-    'Jacqueline Dos Santos Rosario', #
-    'Juliana Rodrigues Ferraz',#
-    'Laura Zamaioli Taiacol', #
-    'Matheus Platini de Araujo Barros', #
-    'Mayara Soldado', #
-    'Miguel Ishiara da Silva',#
-    'Paulo Guilherme Junior', #
-    'Sarah Maria Lima da Silva',#
-    'Luiz Henrique Costa Perez',#
-    'Thais Bitencourt Moreira de Oliveira'#
+    'Juliana Trevisan Rezende', 'Beatriz Ridolfi Teixeira', 'Sergio Ferreira da Silva', 
+    'Adriano Santos Rodrigues', 'Wilgner Felix Pereira de Lima', 'Fabiana Gomes Macedo Rossetti', 
+    'Henrique Aguiar Fraga', 'Julio Cesar Arantes Pollaria', 'Isabela Santos do Nascimento', 
+    'Lucas Oliveira da Silva', 'Grasiele Cristiane de Araujo Goncalves', 'Kevin Axel Beltrame', 
+    'Mariana Araujo de Oliveira Dias', 'Yasmim Alves de Lima e Silva', 'Ana Luiza Sbruzzi Portela Figueiredo', 
+    'Arthur Davi Kikumiti Barros', 'Pedro Hack Schroder Silva', 'Giovanna Mendonca Valentim', 
+    'Alini Ferreira Calvi', 'Ana Carolina de Morais Gamarra', 'Ana Carolina Leao Dos Santos', 
+    'Carlos Eduardo Real Lopes', 'Emylle Katllen Cordeiro do Nascimento', 'Isadora Rossi', 
+    'Izabelle Paulina Rocha Soares Moura', 'Jacqueline Dos Santos Rosario', 'Juliana Rodrigues Ferraz', 
+    'Laura Zamaioli Taiacol', 'Matheus Platini de Araujo Barros', 'Mayara Soldado', 
+    'Miguel Ishiara da Silva', 'Paulo Guilherme Junior', 'Sarah Maria Lima da Silva', 
+    'Luiz Henrique Costa Perez', 'Thais Bitencourt Moreira de Oliveira'
 ]
+
+# =================================================================
+# NOVA ALTERAÇÃO 1: FUNÇÃO PARA CARREGAR E PROCESSAR DADOS
+# Todo o bloco de carregamento de dados foi movido para dentro desta função.
+# Ela agora retorna os dados em formato JSON, que é compatível com o dcc.Store.
+# =================================================================
+def load_and_process_data():
+    """Conecta ao Azure DevOps, busca os work items e retorna um DataFrame como JSON."""
+    try:
+        ado_pat = os.getenv('ADO_PERSONAL_ACCESS_TOKEN')
+        ado_org_url = os.getenv('ADO_ORGANIZATION_URL')
+        ado_project_name = os.getenv('ADO_PROJECT_NAME')
+
+        credentials = BasicAuthentication('', ado_pat)
+        connection = Connection(base_url=ado_org_url, creds=credentials)
+        wit_client = connection.clients.get_work_item_tracking_client()
+        print("Conectado ao Azure DevOps para atualização de dados.")
+
+        team_context = TeamContext(project=ado_project_name)
+        
+        query_text = """
+        SELECT [System.Id], [System.WorkItemType], [System.Title], [System.AssignedTo], [System.State], [System.AreaPath], [System.CreatedDate], [Microsoft.VSTS.Scheduling.StartDate], [Microsoft.VSTS.Scheduling.TargetDate], [System.Parent], [Microsoft.VSTS.Scheduling.Effort], [Microsoft.VSTS.Common.BusinessValue], [System.Tags], [Custom.data_incl], [Microsoft.VSTS.Common.ClosedDate]
+        FROM workitems WHERE [System.TeamProject] = @project AND ([System.ChangedDate] > @today - 365 AND ([System.WorkItemType] = 'Feature' OR [System.WorkItemType] = 'Projeto' OR [System.WorkItemType] = 'Epic' OR [System.WorkItemType] = 'User Story') AND [System.State] <> '')
+        """
+        
+        wiql_object = Wiql(query=query_text)
+        wiql_results = wit_client.query_by_wiql(wiql=wiql_object, team_context=team_context)
+
+        if not wiql_results.work_items:
+            return pd.DataFrame().to_json(date_format='iso', orient='split')
+
+        work_item_ids = [item.id for item in wiql_results.work_items]
+        work_items_details = []
+        chunk_size = 200
+        
+        for i in range(0, len(work_item_ids), chunk_size):
+            chunk = work_item_ids[i:i + chunk_size]
+            batch_details = wit_client.get_work_items(ids=chunk, expand="All")
+            work_items_details.extend(batch_details)
+        
+        data_for_df = [
+            {
+                'ID': item.id, 'Work Item Type': fields.get('System.WorkItemType'), 'Title': fields.get('System.Title'),
+                'State': fields.get('System.State'), 'Assigned To': fields.get('System.AssignedTo', {}).get('displayName', 'Não atribuído'),
+                'Parent': fields.get('System.Parent'), 'Start Date': fields.get('Microsoft.VSTS.Scheduling.StartDate'),
+                'Target Date': fields.get('Microsoft.VSTS.Scheduling.TargetDate'), 'Effort': fields.get('Microsoft.VSTS.Scheduling.Effort'),
+                'Business Value': fields.get('Microsoft.VSTS.Common.BusinessValue'), 'data_incl': fields.get('Custom.data_incl'),
+            } for item in work_items_details if (fields := item.fields)
+        ]
+        
+        df = pd.DataFrame(data_for_df)
+        
+        # Processamento do DataFrame
+        for col in ['ID', 'Parent', 'Effort', 'Business Value']:
+            df[col] = pd.to_numeric(df[col], errors='coerce')
+        for col in ['Start Date', 'Target Date', 'data_incl']:
+            df[col] = pd.to_datetime(df[col], errors='coerce').dt.tz_localize(None)
+        df['Assigned To'] = df['Assigned To'].fillna('Não atribuído').str.split('<').str[0].str.strip()
+        df['State'] = df['State'].fillna('Não definido')
+        
+        print(f"Dados processados. {len(df)} itens carregados.")
+        return df.to_json(date_format='iso', orient='split')
+
+    except Exception as e:
+        print(f"!!!!!! ERRO AO CARREGAR DADOS DO AZURE DEVOPS: {e} !!!!!!")
+        return pd.DataFrame().to_json(date_format='iso', orient='split')
 
 # ===============================
 # FUNÇÕES AUXILIARES
+# NOVA ALTERAÇÃO 2: Funções agora recebem 'df' como argumento, pois não há mais um 'df' global.
 # ===============================
-def calcular_progresso_geral():
-    if not dados_carregados or df.empty: return 0
+def calcular_progresso_geral(df):
+    if df.empty: return 0
     todas_atividades = df[df['Work Item Type'] == 'User Story']
     if len(todas_atividades) == 0: return 0
     atividades_concluidas = todas_atividades[todas_atividades['State'].str.lower().isin(['done', 'closed'])]
     return round((len(atividades_concluidas) / len(todas_atividades)) * 100, 1)
 
-def criar_barra_progresso_geral():
-    progresso_percent = calcular_progresso_geral()
+def criar_barra_progresso_geral(df):
+    progresso_percent = calcular_progresso_geral(df)
+    # ... (código da função inalterado)
     return html.Div(className='geral-progress-container', children=[
         html.Div(className='geral-progress-header', children=[
             html.H2('PROGRESSO GERAL DAS ATIVIDADES', className='geral-progress-title'),
@@ -200,6 +132,7 @@ def criar_barra_progresso_geral():
 
 def formatar_nome_para_arquivo(nome):
     if not isinstance(nome, str): return ""
+    # ... (código da função inalterado)
     nome_formatado = nome.lower()
     nome_formatado = re.sub(r'\s+', '-', nome_formatado)
     nome_formatado = re.sub(r'[^a-z0-9-]', '', nome_formatado)
@@ -222,31 +155,29 @@ def get_person_assets(name):
     selected['photo_url'] = f'/assets/{formatar_nome_para_arquivo(name)}.png' if name in PEOPLE_WITH_PHOTOS else '/assets/default-avatar.png'
     return selected
 
-def calcular_conclusao(item_id):
-    if not dados_carregados or df.empty: return 0
+def calcular_conclusao(item_id, df):
+    if df.empty: return 0
+    # ... (código da função inalterado)
     children = df[df['Parent'] == item_id]
     if len(children) == 0: return 0
     concluidas = children[children['State'].str.lower().isin(['done', 'closed'])]
     return round((len(concluidas) / len(children)) * 100, 1)
 
-def criar_card_epic(epic_row):
-    status_class = str(epic_row['State']).lower().replace(' ', '-')
+def criar_card_epic(epic_row, df):
     person_assets = get_person_assets(epic_row['Assigned To'])
     card_style = {'backgroundColor': person_assets['light'], 'borderLeft': f'5px solid {person_assets["strong"]}'}
-
+    # ... (código da função inalterado)
     features_do_epic = df[(df['Parent'] == epic_row['ID']) & (df['Work Item Type'] == 'Feature')]
     total_features = len(features_do_epic)
-    
     features_concluidas = features_do_epic[features_do_epic['State'].str.lower().isin(['done', 'closed'])]
     concluidas_count = len(features_concluidas)
-    
     progresso_features_texto = f"{concluidas_count}/{total_features}"
 
     return html.Div(className='card epic-card-list epic-card-list-compact', style=card_style, children=[
         html.Div(className='card-body', children=[
             html.Div(className='card-header', children=[
                 html.H4(epic_row['Title'], className='card-title-small'),
-                html.Span(progresso_features_texto, className="status-badge") 
+                html.Span(progresso_features_texto, className="status-badge")
             ]),
             html.Div(className='epic-card-footer-aligned', children=[
                 html.Div(f"{epic_row['Assigned To']}", className='epic-responsible'),
@@ -256,31 +187,29 @@ def criar_card_epic(epic_row):
     ])
 
 # ===============================
-# COMPONENTES DE LAYOUT
+# COMPONENTES DE LAYOUT (a maioria agora recebe 'df' como argumento)
 # ===============================
 def criar_header():
+    # ... (código da função inalterado)
     return html.Div(className='header', children=[
         html.Div(className='header-content', children=[
-
             html.Div(id = 'logo-container', children = [
                 dcc.Link(href='/', children=[
-                html.Img(src='/assets/logo-escura.png', className='header-logo-base logo-padrao'),
-                html.Img(src='/assets/logo-branca.png', className='header-logo-base logo-branca')
+                    html.Img(src='/assets/logo-escura.png', className='header-logo-base logo-padrao'),
+                    html.Img(src='/assets/logo-branca.png', className='header-logo-base logo-branca')
                 ])
             ]),
-          
             html.Div(className='header-title-center', children=[
                 html.H1('MARKETING & INTELIGÊNCIA', className='header-title'),
                 html.P('Roadmap Estratégico', className='header-subtitle')
             ]),
-
             html.Div(id='theme-switcher-container', children=[
                 html.Button('🌙', id='theme-switcher-button', n_clicks=0, **{'data-dummy-output': ''})
             ])
         ])
     ])
 
-def criar_breadcrumb(pathname):
+def criar_breadcrumb(pathname, df):
     parts = [p for p in pathname.split('/') if p]
     breadcrumbs = [dcc.Link('Projetos', href='/')]
     url_path = ''
@@ -296,7 +225,7 @@ def criar_breadcrumb(pathname):
                 breadcrumbs.extend([' › ', "Item não encontrado"])
     return html.Div(className='breadcrumb', children=breadcrumbs)
 
-def criar_card_projeto(row):
+def criar_card_projeto(row, df):
     epics_count = len(df[(df['Parent'] == row['ID']) & (df['Work Item Type'] == 'Epic')])
     person_assets = get_person_assets(row['Assigned To'])
     card_style = {'backgroundColor': person_assets['strong'], 'color': '#FFFFFF', 'border': 'none'}
@@ -312,9 +241,9 @@ def criar_card_projeto(row):
     return html.Div([project_card, html.Div(id={'type': 'epics-container', 'index': row['ID']}, className='epics-wrapper')])
 
 # ===============================
-# PÁGINAS
+# PÁGINAS (agora recebem 'df' como argumento)
 # ===============================
-def pagina_projetos():
+def pagina_projetos(df):
     sorted_areas = sorted(AREAS.items(), key=lambda item: item[1]['nome'])
     area_cards = []
     for key, area_info in sorted_areas:
@@ -334,12 +263,12 @@ def pagina_projetos():
         ])
         area_cards.append(card)
     return html.Div(className='page-container', children=[
-        criar_breadcrumb('/'),
-        criar_barra_progresso_geral(),
+        criar_breadcrumb('/', df),
+        criar_barra_progresso_geral(df),
         html.Div(className='areas-wrapper', children=area_cards)
     ])
 
-def criar_lista_de_tarefas(feature_id, colors):
+def criar_lista_de_tarefas(feature_id, colors, df):
     tasks = df[df['Parent'] == feature_id]
     if tasks.empty:
         return html.P("Nenhuma atividade encontrada para esta feature.", className="no-tasks-message")
@@ -360,20 +289,17 @@ def criar_lista_de_tarefas(feature_id, colors):
     return html.Div(className='tasks-list-colored', children=task_items)
 
 def criar_header_features():
+    # ... (código da função inalterado)
     return html.Div(className='features-header-row', children=[
-        html.Div('Atividade', className='header-cell title'),
-        html.Div('Responsável', className='header-cell responsible'),
-        html.Div('Início', className='header-cell start-date'),
-        html.Div('Entrega', className='header-cell target-date'),
-        html.Div('Esforço', className='header-cell effort'),
-        html.Div('Valor', className='header-cell business-value'),
-        html.Div('Status', className='header-cell state'),
-        html.Div('Progresso', className='header-cell progress'),
+        html.Div('Atividade', className='header-cell title'), html.Div('Responsável', className='header-cell responsible'),
+        html.Div('Início', className='header-cell start-date'), html.Div('Entrega', className='header-cell target-date'),
+        html.Div('Esforço', className='header-cell effort'), html.Div('Valor', className='header-cell business-value'),
+        html.Div('Status', className='header-cell state'), html.Div('Progresso', className='header-cell progress'),
         html.Div('', className='header-cell expand-icon-container')
     ])
 
-def criar_feature_row_expandable(feature, colors, index):
-    progresso = calcular_conclusao(feature["ID"])
+def criar_feature_row_expandable(feature, colors, index, df):
+    progresso = calcular_conclusao(feature["ID"], df)
     strong_shades = colors.get('strong_shades', ['#6c757d', '#868e96', '#adb5bd'])
     row_style = {'backgroundColor': strong_shades[index % len(strong_shades)], 'color': colors['text_on_strong']}
     start_date_str = feature['Start Date'].strftime('%d/%m/%Y') if pd.notna(feature['Start Date']) else 'N/A'
@@ -382,12 +308,9 @@ def criar_feature_row_expandable(feature, colors, index):
     value_str = int(feature['Business Value']) if pd.notna(feature['Business Value']) else 'N/A'
     return html.Div(className='feature-container', children=[
         html.Div(id={'type': 'feature-toggle', 'index': feature['ID']}, className='feature-row-expandable', style=row_style, n_clicks=0, children=[
-            html.Div(feature['Title'], className='feature-cell title'),
-            html.Div(feature['Assigned To'], className='feature-cell responsible'),
-            html.Div(start_date_str, className='feature-cell start-date'),
-            html.Div(target_date_str, className='feature-cell target-date'),
-            html.Div(effort_str, className='feature-cell effort'),
-            html.Div(value_str, className='feature-cell business-value'),
+            html.Div(feature['Title'], className='feature-cell title'), html.Div(feature['Assigned To'], className='feature-cell responsible'),
+            html.Div(start_date_str, className='feature-cell start-date'), html.Div(target_date_str, className='feature-cell target-date'),
+            html.Div(effort_str, className='feature-cell effort'), html.Div(value_str, className='feature-cell business-value'),
             html.Div(feature['State'], className='feature-cell state'),
             html.Div(className='feature-cell progress', children=[
                 html.Span(f"{progresso}%"),
@@ -398,32 +321,36 @@ def criar_feature_row_expandable(feature, colors, index):
         html.Div(id={'type': 'tasks-container', 'index': feature['ID']}, className='tasks-wrapper-expandable')
     ])
 
-def pagina_features(epic_id):
+def pagina_features(epic_id, df):
     try:
         epic = df[df['ID'] == epic_id].iloc[0]
     except IndexError:
-        return html.Div(className='page-container', children=[criar_breadcrumb(f'/epic/{epic_id}'), html.H2("Erro: Épico não encontrado")])
-    features = df[(df['Parent'] == epic_id) & (df['Work Item Type'] == 'Feature')]
+        return html.Div(className='page-container', children=[criar_breadcrumb(f'/epic/{epic_id}', df), html.H2("Erro: Épico não encontrado")])
+    
+    features = df[(df['Parent'] == epic_id) & (df['Work Item Type'] == 'Feature')].copy()
     project_id = epic.get('Parent')
     project_responsible = 'default'
     if pd.notna(project_id):
         try:
             project_responsible = df.loc[df['ID'] == project_id, 'Assigned To'].iloc[0]
         except IndexError: pass
+    
     project_assets = get_person_assets(project_responsible)
     breadcrumb_path = f'/projeto/{project_id}/epic/{epic_id}' if pd.notna(project_id) else f'/epic/{epic_id}'
+    
     if features.empty:
         feature_content = html.P("Nenhuma feature encontrada para este épico.", className='no-projects-message')
     else:
-        features['Progresso'] = features['ID'].apply(calcular_conclusao)
+        features['Progresso'] = features['ID'].apply(lambda x: calcular_conclusao(x, df))
         features = features.sort_values(by=['Business Value', 'Target Date', 'Progresso'], ascending=[False, True, True], na_position='last')
         feature_content = html.Div([
             criar_header_features(),
-            html.Div([criar_feature_row_expandable(f, project_assets, i) for i, (_, f) in enumerate(features.iterrows())])
+            html.Div([criar_feature_row_expandable(f, project_assets, i, df) for i, (_, f) in enumerate(features.iterrows())])
         ])
+        
     return html.Div(className='page-container', children=[
         html.Div(className='breadcrumb-header', children=[
-            criar_breadcrumb(breadcrumb_path),
+            criar_breadcrumb(breadcrumb_path, df),
             dcc.Link('‹ Voltar', href='/', className='btn-voltar-dinamico', style={'backgroundColor': project_assets['strong']})
         ]),
         feature_content
@@ -436,47 +363,124 @@ app = dash.Dash(__name__, suppress_callback_exceptions=True, assets_folder='asse
 server = app.server
 app.title = "Roadmap Estratégico"
 
+# =================================================================
+# NOVA ALTERAÇÃO 3: LAYOUT ATUALIZADO COM dcc.Store e dcc.Interval
+# =================================================================
 app.layout = html.Div([
+    # Componente para armazenar os dados em cache no navegador do cliente
+    dcc.Store(id='data-store'),
+    
+    # Componente que dispara a atualização a cada 5 minutos
+    # A fórmula é: minutos * 60 segundos * 1000 milissegundos
+    dcc.Interval(
+        id='interval-component',
+        interval=5 * 60 * 1000,  # 5 minutos
+        n_intervals=0
+    ),
+    
+    # Componentes visuais do app
     dcc.Location(id='url', refresh=False),
     criar_header(),
-    html.Div(id='page-content')
+    html.Div(id='page-content', children=html.H2("Carregando dados...", style={'textAlign': 'center'}))
 ])
 
 # ===============================
 # CALLBACKS
+# NOVA ALTERAÇÃO 4: CALLBACKS REESTRUTURADOS
 # ===============================
-@app.callback(Output('page-content', 'children'), [Input('url', 'pathname')])
-def display_page(pathname):
-    if not dados_carregados: return html.Div("Erro ao carregar dados.", className='error-message')
-    if pathname == '/' or pathname is None: return pagina_projetos()
+
+# CALLBACK 1 (NOVO): Atualiza os dados no dcc.Store a cada disparo do dcc.Interval
+@app.callback(
+    Output('data-store', 'data'),
+    Input('interval-component', 'n_intervals')
+)
+def update_data_store(n):
+    print(f"Disparo de atualização nº {n}. Buscando dados do Azure DevOps...")
+    json_data = load_and_process_data()
+    print("Armazenamento de dados (dcc.Store) atualizado.")
+    return json_data
+
+# CALLBACK 2 (MODIFICADO): Renderiza a página correta com base na URL e nos dados do dcc.Store
+@app.callback(
+    Output('page-content', 'children'),
+    [Input('url', 'pathname'),
+     Input('data-store', 'data')]
+)
+def display_page(pathname, json_data):
+    if not json_data:
+        return html.Div("Aguardando o carregamento inicial dos dados...", className='error-message')
+
+    # Converte o JSON do dcc.Store de volta para um DataFrame
+    df = pd.read_json(json_data, orient='split')
+    # É importante re-converter as colunas de data, pois o JSON as transforma em texto
+    for col in ['Start Date', 'Target Date', 'data_incl']:
+        if col in df.columns:
+            df[col] = pd.to_datetime(df[col], errors='coerce').dt.tz_localize(None)
+
+    # Roteamento de páginas
+    if pathname == '/' or pathname is None:
+        return pagina_projetos(df)
     elif pathname.startswith('/epic/'):
         try:
             epic_id = int(pathname.split('/')[2])
-            return pagina_features(epic_id)
-        except (ValueError, IndexError): return html.Div("ID de épico inválido.", className='error-message')
-    else: return html.Div("Página não encontrada.", className='error-message')
+            return pagina_features(epic_id, df)
+        except (ValueError, IndexError):
+            return html.Div("ID de épico inválido.", className='error-message')
+    else:
+        return html.Div("Página não encontrada.", className='error-message')
 
-@app.callback(Output({'type': 'projects-container', 'index': MATCH}, 'children'), Input({'type': 'area-card-clickable', 'index': MATCH}, 'n_clicks'), State({'type': 'projects-container', 'index': MATCH}, 'children'), prevent_initial_call=True)
-def toggle_projects_area(n_clicks, current_children):
+# CALLBACKS 3, 4 e 5 (MODIFICADOS): Agora usam os dados do dcc.Store em vez de um 'df' global
+@app.callback(
+    Output({'type': 'projects-container', 'index': MATCH}, 'children'),
+    Input({'type': 'area-card-clickable', 'index': MATCH}, 'n_clicks'),
+    [State({'type': 'projects-container', 'index': MATCH}, 'children'),
+     State('data-store', 'data')],
+    prevent_initial_call=True
+)
+def toggle_projects_area(n_clicks, current_children, json_data):
+    if not n_clicks or not json_data: return dash.no_update
     if current_children: return []
+    
+    df = pd.read_json(json_data, orient='split')
     area_key = ctx.triggered_id['index']
     responsavel = AREAS[area_key]['responsavel']
     projetos_da_area = df[(df['Assigned To'] == responsavel) & (df['Work Item Type'] == 'Projeto')].sort_values(by='Title', ascending=True)
     if projetos_da_area.empty: return html.P("Nenhum projeto encontrado.", className='no-projects-message')
-    return [criar_card_projeto(row) for _, row in projetos_da_area.iterrows()]
+    return [criar_card_projeto(row, df) for _, row in projetos_da_area.iterrows()]
 
-@app.callback(Output({'type': 'epics-container', 'index': MATCH}, 'children'), Input({'type': 'project-card-clickable', 'index': MATCH}, 'n_clicks'), State({'type': 'epics-container', 'index': MATCH}, 'children'), prevent_initial_call=True)
-def toggle_epics_area(n_clicks, current_children):
-    if not n_clicks: return dash.no_update
+@app.callback(
+    Output({'type': 'epics-container', 'index': MATCH}, 'children'),
+    Input({'type': 'project-card-clickable', 'index': MATCH}, 'n_clicks'),
+    [State({'type': 'epics-container', 'index': MATCH}, 'children'),
+     State('data-store', 'data')],
+    prevent_initial_call=True
+)
+def toggle_epics_area(n_clicks, current_children, json_data):
+    if not n_clicks or not json_data: return dash.no_update
     if current_children: return []
+    
+    df = pd.read_json(json_data, orient='split')
     project_id = ctx.triggered_id['index']
     epics_do_projeto = df[(df['Parent'] == project_id) & (df['Work Item Type'] == 'Epic')]
     if epics_do_projeto.empty: return html.P("Este projeto não possui épicos.", className='no-projects-message')
-    return [criar_card_epic(row) for _, row in epics_do_projeto.iterrows()]
+    return [criar_card_epic(row, df) for _, row in epics_do_projeto.iterrows()]
 
-@app.callback([Output({'type': 'tasks-container', 'index': MATCH}, 'children'), Output({'type': 'expand-icon', 'index': MATCH}, 'children')], [Input({'type': 'feature-toggle', 'index': MATCH}, 'n_clicks')], [State({'type': 'tasks-container', 'index': MATCH}, 'children')], prevent_initial_call=True)
-def toggle_tasks_display(n_clicks, current_children):
-    if not n_clicks: return dash.no_update, dash.no_update
+@app.callback(
+    [Output({'type': 'tasks-container', 'index': MATCH}, 'children'),
+     Output({'type': 'expand-icon', 'index': MATCH}, 'children')],
+    Input({'type': 'feature-toggle', 'index': MATCH}, 'n_clicks'),
+    [State({'type': 'tasks-container', 'index': MATCH}, 'children'),
+     State('data-store', 'data')],
+    prevent_initial_call=True
+)
+def toggle_tasks_display(n_clicks, current_children, json_data):
+    if not n_clicks or not json_data: return dash.no_update, dash.no_update
+    
+    df = pd.read_json(json_data, orient='split')
+    for col in ['Start Date', 'Target Date', 'data_incl']:
+        if col in df.columns:
+            df[col] = pd.to_datetime(df[col], errors='coerce').dt.tz_localize(None)
+
     feature_id = ctx.triggered_id['index']
     if current_children: return [], '▼'
     else:
@@ -487,8 +491,9 @@ def toggle_tasks_display(n_clicks, current_children):
             project_assets = get_person_assets(project['Assigned To'])
         except Exception:
             project_assets = get_person_assets('default')
-        return criar_lista_de_tarefas(feature_id, project_assets), '▲'
+        return criar_lista_de_tarefas(feature_id, project_assets, df), '▲'
 
+# Callback do tema (sem alterações)
 app.clientside_callback(
     ClientsideFunction(namespace='clientside', function_name='toggleTheme'),
     Output('theme-switcher-button', 'data-dummy-output'),
