@@ -26,7 +26,7 @@ app.title = "Roadmap Estratégico"
 cache = Cache(app.server, config={
     'CACHE_TYPE': 'filesystem',
     'CACHE_DIR': 'cache-directory',
-    'CACHE_DEFAULT_TIMEOUT': 300  
+    'CACHE_DEFAULT_TIMEOUT': 900  
 })
 
 # ===============================
