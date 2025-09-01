@@ -8,8 +8,26 @@ import re
 from msrest.authentication import BasicAuthentication
 from azure.devops.connection import Connection
 from azure.devops.v7_1.work_item_tracking.models import TeamContext, Wiql
+# NOVA ALTERAÇÃO 1: Importar a biblioteca de cache
+from flask_caching import Cache
 
 load_dotenv()
+
+# ===============================
+# CONFIGURAÇÃO DO APP E CACHE
+# ===============================
+app = dash.Dash(__name__, suppress_callback_exceptions=True, assets_folder='assets')
+server = app.server
+app.title = "Roadmap Estratégico"
+
+# NOVA ALTERAÇÃO 2: Configurar o cache
+# Isso cria um "depósito" no servidor para guardar os dados.
+# CACHE_DEFAULT_TIMEOUT: Tempo que os dados ficam no depósito (em segundos). 300s = 5 minutos.
+cache = Cache(app.server, config={
+    'CACHE_TYPE': 'filesystem',
+    'CACHE_DIR': 'cache-directory',
+    'CACHE_DEFAULT_TIMEOUT': 300  
+})
 
 # ===============================
 # MAPEAMENTO DE ÁREAS E PESSOAS (Sem alterações)
@@ -24,7 +42,6 @@ AREAS = {
     'produto': {'nome': 'Gestão de Produto', 'responsavel': 'Henrique Aguiar Fraga', 'image_file': 'Produto.png'},
     'comunicacao': {'nome': 'Marca e Comunicação', 'responsavel': 'Julio Cesar Arantes Pollaria', 'image_file': 'Marca.png'}
 }
-
 PEOPLE_WITH_PHOTOS = [
     'Juliana Trevisan Rezende', 'Beatriz Ridolfi Teixeira', 'Sergio Ferreira da Silva', 
     'Adriano Santos Rodrigues', 'Wilgner Felix Pereira de Lima', 'Fabiana Gomes Macedo Rossetti', 
@@ -39,46 +56,42 @@ PEOPLE_WITH_PHOTOS = [
     'Miguel Ishiara da Silva', 'Paulo Guilherme Junior', 'Sarah Maria Lima da Silva', 
     'Luiz Henrique Costa Perez', 'Thais Bitencourt Moreira de Oliveira'
 ]
-
 # =================================================================
-# NOVA ALTERAÇÃO 1: FUNÇÃO PARA CARREGAR E PROCESSAR DADOS
-# Todo o bloco de carregamento de dados foi movido para dentro desta função.
-# Ela agora retorna os dados em formato JSON, que é compatível com o dcc.Store.
+# FUNÇÃO DE CARREGAMENTO DE DADOS COM CACHE
 # =================================================================
-def load_and_process_data():
-    """Conecta ao Azure DevOps, busca os work items e retorna um DataFrame como JSON."""
+# NOVA ALTERAÇÃO 3: O "decorador" @cache.memoize()
+# Esta é a linha mágica. Ela diz ao servidor: "Quando esta função for chamada,
+# primeiro verifique se há um resultado válido no 'depósito' (cache).
+# Se houver, retorne-o instantaneamente. Se não, execute a função,
+# guarde o resultado no depósito e então o retorne."
+@cache.memoize()
+def get_data():
+    """Conecta ao Azure DevOps, busca os work items e retorna um DataFrame."""
     try:
+        # O resto da lógica de busca de dados é a mesma
         ado_pat = os.getenv('ADO_PERSONAL_ACCESS_TOKEN')
         ado_org_url = os.getenv('ADO_ORGANIZATION_URL')
         ado_project_name = os.getenv('ADO_PROJECT_NAME')
-
         credentials = BasicAuthentication('', ado_pat)
         connection = Connection(base_url=ado_org_url, creds=credentials)
         wit_client = connection.clients.get_work_item_tracking_client()
-        print("Conectado ao Azure DevOps para atualização de dados.")
-
+        print("CONECTANDO AO AZURE DEVOPS PARA BUSCAR DADOS (CACHE EXPIRADO OU PRIMEIRA VEZ)")
         team_context = TeamContext(project=ado_project_name)
-        
         query_text = """
         SELECT [System.Id], [System.WorkItemType], [System.Title], [System.AssignedTo], [System.State], [System.AreaPath], [System.CreatedDate], [Microsoft.VSTS.Scheduling.StartDate], [Microsoft.VSTS.Scheduling.TargetDate], [System.Parent], [Microsoft.VSTS.Scheduling.Effort], [Microsoft.VSTS.Common.BusinessValue], [System.Tags], [Custom.data_incl], [Microsoft.VSTS.Common.ClosedDate]
         FROM workitems WHERE [System.TeamProject] = @project AND ([System.ChangedDate] > @today - 365 AND ([System.WorkItemType] = 'Feature' OR [System.WorkItemType] = 'Projeto' OR [System.WorkItemType] = 'Epic' OR [System.WorkItemType] = 'User Story') AND [System.State] <> '')
         """
-        
         wiql_object = Wiql(query=query_text)
         wiql_results = wit_client.query_by_wiql(wiql=wiql_object, team_context=team_context)
-
         if not wiql_results.work_items:
-            return pd.DataFrame().to_json(date_format='iso', orient='split')
-
+            return pd.DataFrame()
         work_item_ids = [item.id for item in wiql_results.work_items]
         work_items_details = []
         chunk_size = 200
-        
         for i in range(0, len(work_item_ids), chunk_size):
             chunk = work_item_ids[i:i + chunk_size]
             batch_details = wit_client.get_work_items(ids=chunk, expand="All")
             work_items_details.extend(batch_details)
-        
         data_for_df = [
             {
                 'ID': item.id, 'Work Item Type': fields.get('System.WorkItemType'), 'Title': fields.get('System.Title'),
@@ -88,27 +101,21 @@ def load_and_process_data():
                 'Business Value': fields.get('Microsoft.VSTS.Common.BusinessValue'), 'data_incl': fields.get('Custom.data_incl'),
             } for item in work_items_details if (fields := item.fields)
         ]
-        
         df = pd.DataFrame(data_for_df)
-        
-        # Processamento do DataFrame
         for col in ['ID', 'Parent', 'Effort', 'Business Value']:
             df[col] = pd.to_numeric(df[col], errors='coerce')
         for col in ['Start Date', 'Target Date', 'data_incl']:
             df[col] = pd.to_datetime(df[col], errors='coerce').dt.tz_localize(None)
         df['Assigned To'] = df['Assigned To'].fillna('Não atribuído').str.split('<').str[0].str.strip()
         df['State'] = df['State'].fillna('Não definido')
-        
-        print(f"Dados processados. {len(df)} itens carregados.")
-        return df.to_json(date_format='iso', orient='split')
-
+        print(f"DADOS CARREGADOS E ARMAZENADOS NO CACHE. {len(df)} itens.")
+        return df
     except Exception as e:
         print(f"!!!!!! ERRO AO CARREGAR DADOS DO AZURE DEVOPS: {e} !!!!!!")
-        return pd.DataFrame().to_json(date_format='iso', orient='split')
+        return pd.DataFrame()
 
 # ===============================
-# FUNÇÕES AUXILIARES
-# NOVA ALTERAÇÃO 2: Funções agora recebem 'df' como argumento, pois não há mais um 'df' global.
+# FUNÇÕES AUXILIARES (recebendo 'df' como argumento)
 # ===============================
 def calcular_progresso_geral(df):
     if df.empty: return 0
@@ -119,7 +126,6 @@ def calcular_progresso_geral(df):
 
 def criar_barra_progresso_geral(df):
     progresso_percent = calcular_progresso_geral(df)
-    # ... (código da função inalterado)
     return html.Div(className='geral-progress-container', children=[
         html.Div(className='geral-progress-header', children=[
             html.H2('PROGRESSO GERAL DAS ATIVIDADES', className='geral-progress-title'),
@@ -129,10 +135,9 @@ def criar_barra_progresso_geral(df):
             html.Div(className='geral-progress-fill', style={'width': f'{progresso_percent}%'})
         ])
     ])
-
+# ... (As outras funções auxiliares como get_person_assets, etc., continuam aqui, inalteradas)
 def formatar_nome_para_arquivo(nome):
     if not isinstance(nome, str): return ""
-    # ... (código da função inalterado)
     nome_formatado = nome.lower()
     nome_formatado = re.sub(r'\s+', '-', nome_formatado)
     nome_formatado = re.sub(r'[^a-z0-9-]', '', nome_formatado)
@@ -157,7 +162,6 @@ def get_person_assets(name):
 
 def calcular_conclusao(item_id, df):
     if df.empty: return 0
-    # ... (código da função inalterado)
     children = df[df['Parent'] == item_id]
     if len(children) == 0: return 0
     concluidas = children[children['State'].str.lower().isin(['done', 'closed'])]
@@ -166,13 +170,11 @@ def calcular_conclusao(item_id, df):
 def criar_card_epic(epic_row, df):
     person_assets = get_person_assets(epic_row['Assigned To'])
     card_style = {'backgroundColor': person_assets['light'], 'borderLeft': f'5px solid {person_assets["strong"]}'}
-    # ... (código da função inalterado)
     features_do_epic = df[(df['Parent'] == epic_row['ID']) & (df['Work Item Type'] == 'Feature')]
     total_features = len(features_do_epic)
     features_concluidas = features_do_epic[features_do_epic['State'].str.lower().isin(['done', 'closed'])]
     concluidas_count = len(features_concluidas)
     progresso_features_texto = f"{concluidas_count}/{total_features}"
-
     return html.Div(className='card epic-card-list epic-card-list-compact', style=card_style, children=[
         html.Div(className='card-body', children=[
             html.Div(className='card-header', children=[
@@ -185,12 +187,7 @@ def criar_card_epic(epic_row, df):
             ])
         ])
     ])
-
-# ===============================
-# COMPONENTES DE LAYOUT (a maioria agora recebe 'df' como argumento)
-# ===============================
 def criar_header():
-    # ... (código da função inalterado)
     return html.Div(className='header', children=[
         html.Div(className='header-content', children=[
             html.Div(id = 'logo-container', children = [
@@ -239,9 +236,8 @@ def criar_card_projeto(row, df):
         ])
     ])
     return html.Div([project_card, html.Div(id={'type': 'epics-container', 'index': row['ID']}, className='epics-wrapper')])
-
 # ===============================
-# PÁGINAS (agora recebem 'df' como argumento)
+# PÁGINAS (recebendo 'df' como argumento)
 # ===============================
 def pagina_projetos(df):
     sorted_areas = sorted(AREAS.items(), key=lambda item: item[1]['nome'])
@@ -267,7 +263,6 @@ def pagina_projetos(df):
         criar_barra_progresso_geral(df),
         html.Div(className='areas-wrapper', children=area_cards)
     ])
-
 def criar_lista_de_tarefas(feature_id, colors, df):
     tasks = df[df['Parent'] == feature_id]
     if tasks.empty:
@@ -289,7 +284,6 @@ def criar_lista_de_tarefas(feature_id, colors, df):
     return html.Div(className='tasks-list-colored', children=task_items)
 
 def criar_header_features():
-    # ... (código da função inalterado)
     return html.Div(className='features-header-row', children=[
         html.Div('Atividade', className='header-cell title'), html.Div('Responsável', className='header-cell responsible'),
         html.Div('Início', className='header-cell start-date'), html.Div('Entrega', className='header-cell target-date'),
@@ -297,7 +291,6 @@ def criar_header_features():
         html.Div('Status', className='header-cell state'), html.Div('Progresso', className='header-cell progress'),
         html.Div('', className='header-cell expand-icon-container')
     ])
-
 def criar_feature_row_expandable(feature, colors, index, df):
     progresso = calcular_conclusao(feature["ID"], df)
     strong_shades = colors.get('strong_shades', ['#6c757d', '#868e96', '#adb5bd'])
@@ -320,7 +313,6 @@ def criar_feature_row_expandable(feature, colors, index, df):
         ]),
         html.Div(id={'type': 'tasks-container', 'index': feature['ID']}, className='tasks-wrapper-expandable')
     ])
-
 def pagina_features(epic_id, df):
     try:
         epic = df[df['ID'] == epic_id].iloc[0]
@@ -357,67 +349,25 @@ def pagina_features(epic_id, df):
     ])
 
 # ===============================
-# CONFIGURAÇÃO DO APP
+# LAYOUT E CALLBACKS
 # ===============================
-app = dash.Dash(__name__, suppress_callback_exceptions=True, assets_folder='assets')
-server = app.server
-app.title = "Roadmap Estratégico"
-
-# =================================================================
-# NOVA ALTERAÇÃO 3: LAYOUT ATUALIZADO COM dcc.Store e dcc.Interval
-# =================================================================
+# NOVA ALTERAÇÃO 4: O layout ficou mais simples. Removemos dcc.Store e dcc.Interval.
 app.layout = html.Div([
-    # Componente para armazenar os dados em cache no navegador do cliente
-    dcc.Store(id='data-store'),
-    
-    # Componente que dispara a atualização a cada 5 minutos
-    # A fórmula é: minutos * 60 segundos * 1000 milissegundos
-    dcc.Interval(
-        id='interval-component',
-        interval=5 * 60 * 1000,  # 5 minutos
-        n_intervals=0
-    ),
-    
-    # Componentes visuais do app
     dcc.Location(id='url', refresh=False),
     criar_header(),
-    html.Div(id='page-content', children=html.H2("Carregando dados...", style={'textAlign': 'center'}))
+    html.Div(id='page-content')
 ])
 
-# ===============================
-# CALLBACKS
-# NOVA ALTERAÇÃO 4: CALLBACKS REESTRUTURADOS
-# ===============================
-
-# CALLBACK 1 (NOVO): Atualiza os dados no dcc.Store a cada disparo do dcc.Interval
-@app.callback(
-    Output('data-store', 'data'),
-    Input('interval-component', 'n_intervals')
-)
-def update_data_store(n):
-    print(f"Disparo de atualização nº {n}. Buscando dados do Azure DevOps...")
-    json_data = load_and_process_data()
-    print("Armazenamento de dados (dcc.Store) atualizado.")
-    return json_data
-
-# CALLBACK 2 (MODIFICADO): Renderiza a página correta com base na URL e nos dados do dcc.Store
+# NOVA ALTERAÇÃO 5: Callbacks simplificados. Todos chamam a função get_data() com cache.
 @app.callback(
     Output('page-content', 'children'),
-    [Input('url', 'pathname'),
-     Input('data-store', 'data')]
+    Input('url', 'pathname')
 )
-def display_page(pathname, json_data):
-    if not json_data:
-        return html.Div("Aguardando o carregamento inicial dos dados...", className='error-message')
-
-    # Converte o JSON do dcc.Store de volta para um DataFrame
-    df = pd.read_json(json_data, orient='split')
-    # É importante re-converter as colunas de data, pois o JSON as transforma em texto
-    for col in ['Start Date', 'Target Date', 'data_incl']:
-        if col in df.columns:
-            df[col] = pd.to_datetime(df[col], errors='coerce').dt.tz_localize(None)
-
-    # Roteamento de páginas
+def display_page(pathname):
+    df = get_data() # Esta chamada será instantânea se os dados estiverem em cache.
+    if df.empty and pathname != '/':
+        return html.Div("Erro ao carregar dados ou dados vazios.", className='error-message')
+    
     if pathname == '/' or pathname is None:
         return pagina_projetos(df)
     elif pathname.startswith('/epic/'):
@@ -429,19 +379,17 @@ def display_page(pathname, json_data):
     else:
         return html.Div("Página não encontrada.", className='error-message')
 
-# CALLBACKS 3, 4 e 5 (MODIFICADOS): Agora usam os dados do dcc.Store em vez de um 'df' global
 @app.callback(
     Output({'type': 'projects-container', 'index': MATCH}, 'children'),
     Input({'type': 'area-card-clickable', 'index': MATCH}, 'n_clicks'),
-    [State({'type': 'projects-container', 'index': MATCH}, 'children'),
-     State('data-store', 'data')],
+    State({'type': 'projects-container', 'index': MATCH}, 'children'),
     prevent_initial_call=True
 )
-def toggle_projects_area(n_clicks, current_children, json_data):
-    if not n_clicks or not json_data: return dash.no_update
+def toggle_projects_area(n_clicks, current_children):
+    if not n_clicks: return dash.no_update
     if current_children: return []
     
-    df = pd.read_json(json_data, orient='split')
+    df = get_data()
     area_key = ctx.triggered_id['index']
     responsavel = AREAS[area_key]['responsavel']
     projetos_da_area = df[(df['Assigned To'] == responsavel) & (df['Work Item Type'] == 'Projeto')].sort_values(by='Title', ascending=True)
@@ -451,15 +399,14 @@ def toggle_projects_area(n_clicks, current_children, json_data):
 @app.callback(
     Output({'type': 'epics-container', 'index': MATCH}, 'children'),
     Input({'type': 'project-card-clickable', 'index': MATCH}, 'n_clicks'),
-    [State({'type': 'epics-container', 'index': MATCH}, 'children'),
-     State('data-store', 'data')],
+    State({'type': 'epics-container', 'index': MATCH}, 'children'),
     prevent_initial_call=True
 )
-def toggle_epics_area(n_clicks, current_children, json_data):
-    if not n_clicks or not json_data: return dash.no_update
+def toggle_epics_area(n_clicks, current_children):
+    if not n_clicks: return dash.no_update
     if current_children: return []
     
-    df = pd.read_json(json_data, orient='split')
+    df = get_data()
     project_id = ctx.triggered_id['index']
     epics_do_projeto = df[(df['Parent'] == project_id) & (df['Work Item Type'] == 'Epic')]
     if epics_do_projeto.empty: return html.P("Este projeto não possui épicos.", className='no-projects-message')
@@ -469,19 +416,15 @@ def toggle_epics_area(n_clicks, current_children, json_data):
     [Output({'type': 'tasks-container', 'index': MATCH}, 'children'),
      Output({'type': 'expand-icon', 'index': MATCH}, 'children')],
     Input({'type': 'feature-toggle', 'index': MATCH}, 'n_clicks'),
-    [State({'type': 'tasks-container', 'index': MATCH}, 'children'),
-     State('data-store', 'data')],
+    State({'type': 'tasks-container', 'index': MATCH}, 'children'),
     prevent_initial_call=True
 )
-def toggle_tasks_display(n_clicks, current_children, json_data):
-    if not n_clicks or not json_data: return dash.no_update, dash.no_update
+def toggle_tasks_display(n_clicks, current_children):
+    if not n_clicks: return dash.no_update, dash.no_update
     
-    df = pd.read_json(json_data, orient='split')
-    for col in ['Start Date', 'Target Date', 'data_incl']:
-        if col in df.columns:
-            df[col] = pd.to_datetime(df[col], errors='coerce').dt.tz_localize(None)
-
+    df = get_data()
     feature_id = ctx.triggered_id['index']
+    
     if current_children: return [], '▼'
     else:
         try:
